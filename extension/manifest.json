@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Скачать видео со звуком",
+  "version": "1.3",
+  "description": "Находит видеопотоки (m3u8) на странице и скачивает их с аудио через yt-dlp на этом Mac в ~/Downloads",
+  "permissions": ["tabs", "storage", "webRequest"],
+  "host_permissions": ["<all_urls>", "http://localhost:8765/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Скачать видео со звуком"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
