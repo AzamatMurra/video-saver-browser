@@ -133,6 +133,7 @@ def worker(jid):
         job["percent"] = 0.0
         args = [YTDLP, "-f", fmt, "--merge-output-format", "mp4", "--newline",
                 "--embed-metadata", "--no-playlist", "--no-update",
+                "--socket-timeout", "60", "--retries", "10", "--fragment-retries", "10",
                 "-o", out_tpl(url, name, job.get("dir")), url]
         p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, env=ENV)
