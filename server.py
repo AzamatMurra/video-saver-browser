@@ -136,6 +136,7 @@ def worker(jid):
                 "-o", out_tpl(url, name, job.get("dir")), url]
         p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, env=ENV)
+        job["proc"] = p
         for line in p.stdout:
             line = line.strip()
             job["last"] = line[-120:]
@@ -159,8 +160,12 @@ def worker(jid):
             job["state"] = "done"
             job["streams"] = probe(job["filename"])
         else:
-            job["state"] = "error"
-            job["error"] = job.get("error") or "yt-dlp завершился с кодом %s" % p.returncode
+            if job.get("cancelled"):
+                job["state"] = "cancelled"
+                job["error"] = "Отменено"
+            else:
+                job["state"] = "error"
+                job["error"] = job.get("error") or "yt-dlp завершился с кодом %s" % p.returncode
     except Exception as e:
         job["state"], job["error"] = "error", str(e)
     finally:
@@ -181,12 +186,17 @@ def schedule_locked():
 
 def evict_history_locked():
     """Держим историю в разумных пределах (см. HIST_CAP)."""
-    finished = [j for j in JOBS.values() if j["state"] in ("done", "error")]
+    finished = [j for j in JOBS.values() if j["state"] in ("done", "error", "cancelled")]
     if len(finished) <= HIST_CAP:
         return
     finished.sort(key=lambda j: j.get("finished") or 0)
     for j in finished[: len(finished) - HIST_CAP]:
         JOBS.pop(j["id"], None)
+
+
+def job_public(j):
+    """Копия задания для JSON-ответов — без внутреннего объекта процесса (proc)."""
+    return {k: v for k, v in j.items() if k != "proc"}
 
 
 class H(BaseHTTPRequestHandler):
@@ -209,7 +219,8 @@ class H(BaseHTTPRequestHandler):
                                          "ytdlp": bool(YTDLP), "active": ACTIVE["n"]})
         if u.path == "/status":
             jid = (u.query or "").split("=")[-1]
-            return send_json(self, 200, JOBS.get(jid) or {"state": "unknown"})
+            j = JOBS.get(jid)
+            return send_json(self, 200, job_public(j) if j else {"state": "unknown"})
         if u.path == "/probe":
             path = unquote((u.query or "").split("=")[-1])
             if not path.startswith(DL_DIR):
@@ -217,7 +228,7 @@ class H(BaseHTTPRequestHandler):
             return send_json(self, 200, probe(path) or {"streams": None, "error": "файл не найден"})
         if u.path == "/jobs":
             with LOCK:
-                items = [dict(j) for j in JOBS.values()]
+                items = [job_public(j) for j in JOBS.values()]
             items.sort(key=lambda j: j.get("added", 0))
             return send_json(self, 200, {"jobs": items, "active": ACTIVE["n"],
                                          "queued": len(QUEUE), "settings": dict(SETTINGS)})
@@ -242,7 +253,7 @@ class H(BaseHTTPRequestHandler):
             return send_json(self, 200, {"ok": True, "removed": path})
         if u.path == "/clear":
             with LOCK:
-                removed = [j for j in JOBS.values() if j["state"] in ("done", "error")]
+                removed = [j for j in JOBS.values() if j["state"] in ("done", "error", "cancelled")]
                 for j in removed:
                     JOBS.pop(j["id"], None)
             return send_json(self, 200, {"removed": len(removed)})
@@ -271,6 +282,75 @@ class H(BaseHTTPRequestHandler):
                 save_settings()
                 schedule_locked()
             return send_json(self, 200, dict(SETTINGS))
+        if u.path == "/cancel":
+            try:
+                data = self._body()
+            except Exception:
+                return send_json(self, 400, {"error": "JSON не прочитан"})
+            jid = (data.get("id") or "")
+            with LOCK:
+                j = JOBS.get(jid)
+                if not j:
+                    return send_json(self, 404, {"error": "задание не найдено"})
+                if j["state"] == "queued":
+                    try:
+                        QUEUE.remove(jid)
+                    except ValueError:
+                        pass
+                    j["state"] = "cancelled"
+                    j["error"] = "Отменено"
+                    j["finished"] = time.time()
+                    return send_json(self, 200, {"ok": True, "state": "cancelled"})
+                if j["state"] == "downloading":
+                    j["cancelled"] = True
+                    proc = j.get("proc")
+                    if proc and proc.poll() is None:
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
+                    return send_json(self, 200, {"ok": True, "state": "cancelling"})
+                return send_json(self, 400, {"error": "задание уже не выполняется"})
+        if u.path == "/restart":
+            try:
+                data = self._body()
+            except Exception:
+                return send_json(self, 400, {"error": "JSON не прочитан"})
+            jid = (data.get("id") or "")
+            with LOCK:
+                j = JOBS.get(jid)
+                if not j:
+                    return send_json(self, 404, {"error": "задание не найдено"})
+                # если активное — сначала останавливаем
+                if j["state"] == "queued":
+                    try:
+                        QUEUE.remove(jid)
+                    except ValueError:
+                        pass
+                    j["state"] = "cancelled"
+                    j["error"] = "Отменено"
+                    j["finished"] = time.time()
+                elif j["state"] == "downloading":
+                    j["cancelled"] = True
+                    proc = j.get("proc")
+                    if proc and proc.poll() is None:
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
+                    j["state"] = "cancelled"
+                    j["error"] = "Отменено"
+                    j["finished"] = time.time()
+                # новое задание с теми же параметрами
+                njid = uuid.uuid4().hex[:10]
+                njob = {"id": njid, "url": j["url"], "fmt": j["fmt"], "name": j["name"],
+                        "state": "queued", "percent": 0.0, "filename": None, "error": None,
+                        "last": "", "tail": "", "added": time.time(), "started": None,
+                        "finished": None, "dir": j.get("dir") or DL_DIR}
+                JOBS[njid] = njob
+                QUEUE.append(njid)
+                schedule_locked()
+            return send_json(self, 200, {"ok": True, "id": njid, "state": njob["state"]})
         if u.path != "/download":
             return send_json(self, 404, {"error": "нет такого пути"})
         try:

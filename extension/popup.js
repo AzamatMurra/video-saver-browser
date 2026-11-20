@@ -12,7 +12,18 @@ const saveDir = el("saveDir");
 const clearBtn = el("clearBtn");
 const titleEl = el("title");
 
-const ST_LABEL = { queued: "В очереди", downloading: "Скачиваю", done: "Готово", error: "Ошибка" };
+const ST_LABEL = { queued: "В очереди", downloading: "Скачиваю", done: "Готово",
+                   error: "Ошибка", cancelled: "Отменено" };
+
+// плашка-кнопка действия без HTML-инъекций (dataset + textContent)
+function jbtn(label, action, id) {
+  const b = document.createElement("button");
+  b.className = "jbtn";
+  b.dataset.action = action;
+  b.dataset.id = id;
+  b.textContent = label;
+  return b;
+}
 
 async function api(path, opts) {
   const r = await fetch(SRV + path, opts);
@@ -74,9 +85,43 @@ function renderJobs(jobs, active, queued) {
       sub.textContent = j.error;
       d.appendChild(sub);
     }
+    if (j.state === "cancelled") {
+      const sub = document.createElement("div");
+      sub.className = "jsub";
+      sub.textContent = j.error || "Отменено";
+      d.appendChild(sub);
+    }
+    const btns = document.createElement("div");
+    btns.className = "jbtns";
+    if (j.state === "queued" || j.state === "downloading") {
+      btns.appendChild(jbtn("✕ Отменить", "cancel", j.id));
+    }
+    if (j.state === "done" || j.state === "error" || j.state === "cancelled") {
+      btns.appendChild(jbtn("↻ Заново", "restart", j.id));
+    }
+    d.appendChild(btns);
     jobsEl.appendChild(d);
   });
 }
+
+// кнопки в списке загрузок (отмена / перезапуск) — делегирование, без HTML-инъекций
+jobsEl.addEventListener("click", async (e) => {
+  const b = e.target.closest("button.jbtn");
+  if (!b) return;
+  const action = b.dataset.action, id = b.dataset.id;
+  b.disabled = true;
+  try {
+    await api("/" + action, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    setStatus(action === "cancel" ? "Задание отменяется…" : "Задание перезапускается…", "ok");
+    refreshJobs();
+  } catch (err) {
+    setStatus("Не удалось выполнить: " + action, "err");
+    b.disabled = false;
+  }
+});
 
 async function refreshJobs() {
   try {

@@ -27,6 +27,10 @@
   .job.done { border-left-color: #16a34a; }
   .job.error { border-left-color: #dc2626; }
   .job.downloading { border-left-color: #2563eb; }
+  .jbtns { display: flex; gap: 6px; margin-top: 6px; }
+  .jbtn { flex: 1; padding: 5px; font-size: 11px; border: 1px solid #8888;
+          border-radius: 6px; background: transparent; color: #444; cursor: pointer; }
+  .jbtn:disabled { opacity: .5; cursor: default; }
   .jhead { display: flex; gap: 6px; align-items: baseline; }
   .jstate { font-size: 11px; color: #555; white-space: nowrap; }
   .jname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
